@@ -213,13 +213,8 @@ static void *bep034_worker() {
 
 static int bep034_fill_hostrecord( char * hostname, bep034_hostrecord ** hostrecord ) {
 
-
 }
-
 
 int bep034_lookup( const char * announce_url ) {
-}
 
-int main() {
-  bep034_lookup( "erdgeist.org" );
 }
