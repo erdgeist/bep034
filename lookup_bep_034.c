@@ -257,32 +257,32 @@ static void bep034_build_announce_url( bep034_job * job, char ** announce_url ) 
 }
 
 static void *bep034_worker() {
-pthread_mutex_lock( &bep034_lock );
-while( 1 ) {
-bep034_job * myjob = 0;
-bep034_hostrecord * hr = 0;
-char * reply = 0;
-int res;
+  pthread_mutex_lock( &bep034_lock );
+  while( 1 ) {
+    bep034_job * myjob = 0;
+    bep034_hostrecord * hr = 0;
+    char * reply = 0;
+    int res;
 
-pthread_cond_wait( &bep034_cond, &bep034_lock);
+    pthread_cond_wait( &bep034_cond, &bep034_lock);
 
-/* Waking up, grab one job from the work queue */
-myjob = bep034_getjob( );
-if( !myjob ) continue;
+    /* Waking up, grab one job from the work queue */
+    myjob = bep034_getjob( );
+    if( !myjob ) continue;
 
-pthread_mutex_unlock( &bep034_lock );
+    pthread_mutex_unlock( &bep034_lock );
 
-/* Fill host record with results from DNS query or cache,
-   owner of the hr is the cache, not us. This can block */
-res = bep034_fill_hostrecord( myjob->hostname, &hr );
-switch( res ) {
-case BEP_034_TIMEOUT:
-case BEP_034_NXDOMAIN:
-case BEP_034_DENYALL:
-  myjob->status = res;
-  break;
-default:
-      if( hr ) {
+    /* Fill host record with results from DNS query or cache,
+       owner of the hr is the cache, not us. This can block */
+    res = bep034_fill_hostrecord( myjob->hostname, &hr );
+    switch( res ) {
+    case BEP_034_TIMEOUT:
+    case BEP_034_NXDOMAIN:
+    case BEP_034_DENYALL:
+      myjob->status = res;
+      break;
+    default:
+          if( hr ) {
         bep034_actonrecord( myjob, hr );
         bep034_build_announce_url( myjob, &reply );
       } else
