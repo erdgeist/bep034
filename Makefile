@@ -1,2 +1,2 @@
 all:
-	gcc -o lookup_bep_034 lookup_bep_034_orig.c -lresolv -pthread
+	gcc -o lookup_bep_034 main.c lookup_bep_034.c -lresolv -pthread
