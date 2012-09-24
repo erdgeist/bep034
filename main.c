@@ -1,10 +1,11 @@
+#include <stdio.h>
 #include "lookup_bep_034.h"
 
 /* worker threads, sane default for the usual amount of trackers */
 #define WORKER_THREADS 8
 
 void my_callback( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url) {
-  printf( "%d yields status: %s and url %s\n", lookup_id, status, announce_url );
+  printf( "%d yields status: %s and url %s\n", lookup_id, bep034_status_to_name[status], announce_url );
 }
 
 int main( int argc, char ** argv ) {

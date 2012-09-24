@@ -1,9 +1,23 @@
-#include <pthread.h>
-#include "lookup_bep_034.h"
-#include <resolv.h>
-#include <arpa/nameser.h>
-#include <netinet/in.h>
+/* Standard C stuff */
+#include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#include <time.h>
+
+/* OSX specific monotonic time functions */
+#ifdef __MACH__
+#include <mach/clock.h>
+#include <mach/mach.h>
+#endif
+
+/* DNS related includes */
+#include <arpa/nameser.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <resolv.h>
+
+/* Our header files */
+#include "lookup_bep_034.h"
 
 static pthread_mutex_t bep034_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  bep034_cond = PTHREAD_COND_INITIALIZER;
@@ -25,28 +39,87 @@ typedef struct {
   uint32_t         trackers[0];   // lower 16 bit port, higher 16 bit proto
 } bep034_hostrecord;
 
-/* Forward declarations */
+/********************************
+
+  Forward declarations
+
+*********************************/
+
 static void        * bep034_worker();
+static void          bep034_pushjob( const char * announce_url );
 static bep034_job  * bep034_getjob();
 static void          bep034_finishjob( bep034_job * job );
 
-static bep034_status bep034_fill_hostrecord( char * hostname, bep034_hostrecord ** hostrecord );
+static bep034_hostrecord * bep034_find_hostrecord( const char * hostname );
+static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostrecord ** hostrecord );
+static int           bep034_save_record( bep034_hostrecord * hostrecord );
 static void          bep034_actonrecord( bep034_job * job, bep034_hostrecord * hostrecord );
 static void          bep034_build_announce_url( bep034_job * job, char ** announce_url );
+
+/********************************
+
+  End of declarations,
+  begin of implementation
+
+*********************************/
+
+/************ static helpers ************/
+static int NOW() {
+#ifdef __MACH__ // OS X does not have clock_gettime, use clock_get_time
+  /* Stolen from http://stackoverflow.com/questions/5167269/clock-gettime-alternative-in-mac-os-x */
+  clock_serv_t cclock;
+  mach_timespec_t now;
+  host_get_clock_service(mach_host_self(), CALENDAR_CLOCK, &cclock);
+  clock_get_time(cclock, &now);
+  mach_port_deallocate(mach_task_self(), cclock);
+#else
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now );
+#endif
+  return now.tv_sec;
+}
+
+/************ Threading and job dispatch helpers ************/
 
 void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url ), int worker_threads) {
   pthread_t thread_id;
   pthread_mutex_lock( &bep034_lock );
   g_callback = callback;
-  for( i=0; i<worker_threads; ++i )
+  while( worker_threads-- )
     pthread_create( &thread_id, NULL, bep034_worker, NULL );
   pthread_mutex_unlock( &bep034_lock );
 }
 
-static bep034_status bep034_fill_hostrecord( char * hostname, bep034_hostrecord ** hostrecord ) {
-  char answer[PACKETSZ];
+static void bep034_pushjob( const char * announce_url ) {
+  /* For now no job handling */
+  return;
+}
+
+static bep034_job * bep034_getjob() {
+  /* For now no job handling */
+  return 0;
+}
+
+static void bep034_finishjob( bep034_job * job ) {
+  /* For now no job handling */
+  return;
+}
+
+/************ Host record handlers *************/
+
+static bep034_hostrecord * bep034_find_hostrecord( const char * hostname ) {
+  /* For now we do not have caching */
+  return 0;
+}
+
+static int bep034_save_record( bep034_hostrecord * hostrecord ) {
+  return 0;
+}
+
+static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostrecord ** hostrecord ) {
+  uint8_t answer[NS_PACKETSZ];
   bep034_hostrecord * hr = 0;
-  int answer_len, num_msgs, i;
+  int answer_len, num_msgs, max_entries, i;
   ns_msg msg;
   ns_rr rr;
 
@@ -61,10 +134,10 @@ static bep034_status bep034_fill_hostrecord( char * hostname, bep034_hostrecord 
   }
 
   /* Query resolver for TXT records for the trackers domain */
-  answer_len = res_search(announce_url, ns_c_in, ns_t_txt, answer, sizeof(answer));
+  answer_len = res_search(hostname, ns_c_in, ns_t_txt, answer, sizeof(answer));
   if( answer_len < 0 ) {
     /* Here we enter race condition land */
-    switch( h_error ) {
+    switch( h_errno ) {
     case NO_RECOVERY: case HOST_NOT_FOUND: return BEP_034_NXDOMAIN;
     case NO_DATA: return BEP_034_NORECORD;
     case NETDB_INTERNAL: case TRY_AGAIN: default: return BEP_034_TIMEOUT;
@@ -77,8 +150,10 @@ static bep034_status bep034_fill_hostrecord( char * hostname, bep034_hostrecord 
     ns_parserr (&msg, ns_s_an, i, &rr);
     if (ns_rr_class(rr) == ns_c_in && ns_rr_type(rr) == ns_t_txt ) {
       uint32_t record_ttl = ns_rr_ttl(rr);
-      const uint8_t *record_ptr = ns_rr_rdata(rr);
       uint16_t record_len = ns_rr_rdlen(rr);
+      const uint8_t *record_ptr = ns_rr_rdata(rr);
+      const char * string_ptr, * string_end;
+      uint32_t port = 0;
 
       /* First octet is length of (first) string in the txt record.
          Since BEP034 does not say anything about multiple strings,
@@ -158,7 +233,7 @@ static bep034_status bep034_fill_hostrecord( char * hostname, bep034_hostrecord 
       }
 
       /* Hand over record to cache, from now the cache has to release memory */
-      if( !bep034_save_record( hr ) )
+      if( bep034_save_record( hr ) )
         return BEP_034_TIMEOUT;
 
       /* Once the first line in the first record has been parsed, return host record */
@@ -168,32 +243,45 @@ static bep034_status bep034_fill_hostrecord( char * hostname, bep034_hostrecord 
   }
 }
 
+/************ The actual engine[tm] *************/
+
+static void bep034_actonrecord( bep034_job * job, bep034_hostrecord * hostrecord ) {
+  /* Here comes the code that modifies a job description accoring to the host record
+     trackers */
+  return;
+}
+
+static void bep034_build_announce_url( bep034_job * job, char ** announce_url ) {
+  *announce_url = strdup( "http://tracker.ccc.de:80/announce" );
+  return;
+}
+
 static void *bep034_worker() {
-  pthread_mutex_lock( &bep034_lock );
-  while( 1 ) {
-    bep034_job * myjob = 0;
-    bep034_hostrecord * hr = 0;
-    char * reply = 0;
-    int res;
+pthread_mutex_lock( &bep034_lock );
+while( 1 ) {
+bep034_job * myjob = 0;
+bep034_hostrecord * hr = 0;
+char * reply = 0;
+int res;
 
-    pthread_cond_wait( &bep034_cond, &bep034_lock);
+pthread_cond_wait( &bep034_cond, &bep034_lock);
 
-    /* Waking up, grab one job from the work queue */
-    myjob = bep034_getjob( );
-    if( !myjob ) continue;
+/* Waking up, grab one job from the work queue */
+myjob = bep034_getjob( );
+if( !myjob ) continue;
 
-    pthread_mutex_unlock( &bep034_lock );
+pthread_mutex_unlock( &bep034_lock );
 
-    /* Fill host record with results from DNS query or cache,
-       owner of the hr is the cache, not us. This can block */
-    res = bep034_fill_hostrecord( myjob->hostname, &hr );
-    switch( res ) {
-    case BEP_034_TIMEOUT:
-    case BEP_034_NXDOMAIN:
-    case BEP_034_DENYALL:
-      myjob->status = res;
-      break;
-    default:
+/* Fill host record with results from DNS query or cache,
+   owner of the hr is the cache, not us. This can block */
+res = bep034_fill_hostrecord( myjob->hostname, &hr );
+switch( res ) {
+case BEP_034_TIMEOUT:
+case BEP_034_NXDOMAIN:
+case BEP_034_DENYALL:
+  myjob->status = res;
+  break;
+default:
       if( hr ) {
         bep034_actonrecord( myjob, hr );
         bep034_build_announce_url( myjob, &reply );
@@ -211,10 +299,29 @@ static void *bep034_worker() {
   }
 }
 
-static int bep034_fill_hostrecord( char * hostname, bep034_hostrecord ** hostrecord ) {
-
-}
+/************ The user API to kick off a lookup *************/
 
 int bep034_lookup( const char * announce_url ) {
-
+  return 1;
 }
+
+/********************************
+
+  End of implementation,
+  begin of external helpers
+
+*********************************/
+
+const char *bep034_status_to_name[] = {
+  "Parse Error.",
+  "In progress, i.e. OK so far",
+  "Timeout, i.e. temporary failure",
+  "NXDomain, i.e. host is unknown",
+  "No trackers, i.e. host explicitely forbids tracker traffic",
+  "HTTP only",
+  "HTTP first",
+  "UDP only",
+  "UDP first"
+};
+
+
