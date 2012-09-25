@@ -94,6 +94,12 @@ void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, be
 
 static int bep034_pushjob( bep034_job * job ) {
   /* For now no job handling */
+
+  printf( "Parsed job info:\n Status: %d (%s)\n Proto: %s\n Port: %d\n Userinfo: %s\n Hostname: %s\n Path: %s\n Original URL: %s\n",
+    job->status, bep034_status_to_name[job->status], job->proto ? "UDP" : "HTTP", job->port,
+    job->userinfo ? job->userinfo : "(none)", job->hostname ? job->hostname : "(none)",
+    job->announce_path ? job->announce_path : "(none)", job->announce_url );
+
   return 1;
 }
 
@@ -311,7 +317,6 @@ static void *bep034_worker() {
 }
 
 static bep034_status bep034_parse_announce_url( bep034_job *job ) {
-  memset( job, 0, sizeof(job));
   char * slash, * colon, * at;
   char * announce_url = job->announce_url;
 
@@ -348,6 +353,9 @@ static bep034_status bep034_parse_announce_url( bep034_job *job ) {
 
   /* This helps parsing */
   if( slash ) *slash = 0;
+
+  /* If colon is only after domain part, ignore it */
+  if( slash && colon && colon > slash ) colon = 0;
   if( colon ) *colon = 0;
 
   /* The host name should now be \0 terminated */
@@ -398,6 +406,8 @@ static bep034_status bep034_parse_announce_url( bep034_job *job ) {
 
 int bep034_lookup( const char * announce_url ) {
   bep034_job tmpjob;
+  memset( &tmpjob, 0, sizeof(tmpjob));
+
   tmpjob.announce_url = strdup( announce_url );
   if( !tmpjob.announce_url )
     return -1;
@@ -426,6 +436,7 @@ const char *bep034_status_to_name[] = {
   "Timeout, i.e. temporary failure",
   "NXDomain, i.e. host is unknown",
   "No trackers, i.e. host explicitely forbids tracker traffic",
+  "Domain has no record. Also true for v4 or v6 addresses",
   "HTTP only",
   "HTTP first",
   "UDP only",
