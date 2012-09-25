@@ -329,11 +329,10 @@ static bep034_status bep034_parse_announce_url( bep034_job *job ) {
   slash = strchr( announce_url, '/' );
   at = strchr( announce_url, '@' );
 
-  /* This helps parsing */
-  if( at ) *at = 0;
-
   if( at && ( !slash || at < slash ) ) {
+    *at = 0;
     job->userinfo = strdup( announce_url );
+    /* Point to after userinfo part */
     announce_url = at + 1;
   }
 
