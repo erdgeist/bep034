@@ -44,6 +44,9 @@ typedef struct {
   int              entries;
   uint32_t         trackers[0];   // lower 16 bit port, higher 16 bit proto
 } bep034_hostrecord;
+/* Host record array guarded by bep034_lock */
+static bep034_hostrecord ** bep034_hostrecordlist;
+static size_t bep034_hostrecordcount;
 
 /********************************
 
@@ -168,11 +171,37 @@ static void bep034_dumpjob( bep034_job * job ) {
 
 /************ Host record handlers *************/
 
+/* This function expects the bep034_lock to be held by caller */
 static bep034_hostrecord * bep034_find_hostrecord( const char * hostname ) {
-  /* For now we do not have caching */
+  int i;
+  /* Linear search for now, have sorted list later */
+  for( i=0; i < bep034_hostrecordcount; ++i ) {
+    bep034_hostrecord * hr = bep034_hostrecordlist[i];
+
+    if( !strcasecmp( hr->hostname, hostname ) ) {
+      /* If the entry is not yet expired, return it */
+      if( NOW() <= hr->expiry )
+        return hr;
+
+      free( hr->hostname );
+      free( hr );
+
+      memmove( bep034_hostrecordlist + i, bep034_hostrecordlist + 1, ( bep034_hostrecordcount - i ) * sizeof( bep034_hostrecord * ) );
+
+      /* Shrinking always succeeds */
+      bep034_hostrecordlist = realloc( bep034_hostrecordlist, --bep034_hostrecordcount * sizeof( bep034_hostrecord *) );
+
+      /* Since we assume our array to be unique, we can stop here */
+      return 0;
+    }
+  }
+
   return 0;
 }
 
+/* This function expects the bep034_lock to be held by caller,
+   it takes the ownership of the hostrecord object on call and
+   frees it on error */
 static int bep034_save_record( bep034_hostrecord * hostrecord ) {
   return 0;
 }
@@ -197,7 +226,8 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
     return BEP_034_INPROGRESS;
   }
 
-  /* Return mutex */
+  /* Return mutex, we'll be blocking now and do not
+     hold any resources in need of guarding  */
   pthread_mutex_unlock( &bep034_lock );
 
   /* Query resolver for TXT records for the trackers domain */
