@@ -28,8 +28,10 @@ typedef struct {
   bep034_status    status;
   int              proto;     // 0 for http, 1 for udp
   uint16_t         port;      // 0 for not explicitly stated
+  char            *userinfo;
   char            *hostname;
   char            *announce_path;
+  char            *announce_url;
 } bep034_job;
 
 typedef struct {
@@ -46,7 +48,7 @@ typedef struct {
 *********************************/
 
 static void        * bep034_worker();
-static void          bep034_pushjob( const char * announce_url );
+static int           bep034_pushjob( bep034_job * job );
 static bep034_job  * bep034_getjob();
 static void          bep034_finishjob( bep034_job * job );
 
@@ -90,9 +92,9 @@ void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, be
   pthread_mutex_unlock( &bep034_lock );
 }
 
-static void bep034_pushjob( const char * announce_url ) {
+static int bep034_pushjob( bep034_job * job ) {
   /* For now no job handling */
-  return;
+  return 1;
 }
 
 static bep034_job * bep034_getjob() {
@@ -252,8 +254,17 @@ static void bep034_actonrecord( bep034_job * job, bep034_hostrecord * hostrecord
 }
 
 static void bep034_build_announce_url( bep034_job * job, char ** announce_url ) {
-  *announce_url = strdup( "http://tracker.ccc.de:80/announce" );
-  return;
+  /* First check length required to compose announce url */
+  size_t req_len = snprintf( 0, 0, "%s://%s%s%s:%d/%s",
+    job->proto ? "http" : "udp", job->userinfo ? job->userinfo : "", job->userinfo ? "@" : "",
+    job->hostname, job->port ? job->port : 80, job->announce_path ? job->announce_path : "" );
+
+  *announce_url = malloc( req_len + 1 );
+  if( !*announce_url ) return;
+
+  snprintf( *announce_url, req_len + 1, "%s://%s%s%s:%d/%s",
+    job->proto ? "http" : "udp", job->userinfo ? job->userinfo : "", job->userinfo ? "@" : "",
+    job->hostname, job->port ? job->port : 80, job->announce_path ? job->announce_path : "" );
 }
 
 static void *bep034_worker() {
@@ -282,7 +293,7 @@ static void *bep034_worker() {
       myjob->status = res;
       break;
     default:
-          if( hr ) {
+      if( hr ) {
         bep034_actonrecord( myjob, hr );
         bep034_build_announce_url( myjob, &reply );
       } else
@@ -299,10 +310,108 @@ static void *bep034_worker() {
   }
 }
 
+static bep034_status bep034_parse_announce_url( bep034_job *job ) {
+  memset( job, 0, sizeof(job));
+  char * slash, * colon, * at;
+  char * announce_url = job->announce_url;
+
+  /* Decompose announce url, if it does not start with udp:// or http://,
+     assume it to be an http url starting with the host name */
+  if( !strncasecmp( announce_url, "udp://", 6 ) ) {
+    job->proto = 1;
+    announce_url += 6;
+  } else if( !strncasecmp( announce_url, "http://", 7 ) )
+    announce_url += 7;
+
+  /* the host name is everything up to the first / or the first colon */
+
+  /* Search for first slash and a possible userinfo:password@ prefix */
+  slash = strchr( announce_url, '/' );
+  at = strchr( announce_url, '@' );
+
+  /* This helps parsing */
+  if( at ) *at = 0;
+
+  if( at && ( !slash || at < slash ) ) {
+    job->userinfo = strdup( announce_url );
+    announce_url = at + 1;
+  }
+
+  /* Check for v6 address. Do it now so the v6 address' colons will not
+     confuse the parser */
+  if( *announce_url == '[' ) {
+    const char * closing_bracket = strchr( announce_url, ']' );
+    if( !closing_bracket )
+      return BEP_034_PARSEERROR;
+    colon = strchr( closing_bracket, ':' );
+  } else
+    colon = strchr( announce_url, ':' );
+
+  /* This helps parsing */
+  if( slash ) *slash = 0;
+  if( colon ) *colon = 0;
+
+  /* The host name should now be \0 terminated */
+  job->hostname = strdup( announce_url );
+
+  /* If we have a slash, treat everything following that slash as announce path,
+     default to the standard path */
+  if( slash )
+    job->announce_path = strdup( slash + 1 );
+  else
+    job->announce_path = strdup( "announce" );
+
+  /* If we've found a colon followed by a slash, we've very likely
+     encountered an unknown scheme. Report a parse error */
+  if( colon + 1 == slash )
+    return BEP_034_PARSEERROR;
+
+  /* Everything from colon to eos must be digits */
+  while( colon && *++colon ) {
+    if( *colon >= '0' && *colon <= '9' )
+      job->port = job->port * 10 + *colon - '0';
+    else
+      return BEP_034_PARSEERROR;
+  }
+
+  if( !job->hostname || !*job->hostname )
+    return BEP_034_PARSEERROR;
+
+  /* Avoid looking up v4/v6 URIs */
+  if( *job->hostname == '[' )
+    return BEP_034_NORECORD;
+
+  /* Candidates are hostnames starting with a digit */
+  if( *job->hostname >= '0' && *job->hostname <= '9' ) {
+    /* If TLD consists solely of digits, assume ipv4 address */
+    char * dot = strrchr( job->hostname, '.' );
+    if( !dot ) return BEP_034_INPROGRESS;
+
+    while( *++dot ) if( *dot < '0' || *dot > '9' ) return BEP_034_INPROGRESS;
+
+    return BEP_034_NORECORD;
+  }
+
+  return BEP_034_INPROGRESS;
+}
+
 /************ The user API to kick off a lookup *************/
 
 int bep034_lookup( const char * announce_url ) {
-  return 1;
+  bep034_job tmpjob;
+  tmpjob.announce_url = strdup( announce_url );
+  if( !tmpjob.announce_url )
+    return -1;
+
+  tmpjob.status = bep034_parse_announce_url( &tmpjob );
+
+  /* announce url might have been modified by parser */
+  free( tmpjob.announce_url );
+  tmpjob.announce_url = strdup( announce_url );
+
+  bep034_pushjob( &tmpjob );
+
+  return 0;
 }
 
 /********************************
