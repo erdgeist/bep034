@@ -51,6 +51,7 @@ static void        * bep034_worker();
 static int           bep034_pushjob( bep034_job * job );
 static bep034_job  * bep034_getjob();
 static void          bep034_finishjob( bep034_job * job );
+static void          bep034_dumpjob( bep034_job * job );
 
 static bep034_hostrecord * bep034_find_hostrecord( const char * hostname );
 static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostrecord ** hostrecord );
@@ -94,12 +95,7 @@ void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, be
 
 static int bep034_pushjob( bep034_job * job ) {
   /* For now no job handling */
-
-  printf( "Parsed job info:\n Status: %d (%s)\n Proto: %s\n Port: %d\n Userinfo: %s\n Hostname: %s\n Path: %s\n Original URL: %s\n",
-    job->status, bep034_status_to_name[job->status], job->proto ? "UDP" : "HTTP", job->port,
-    job->userinfo ? job->userinfo : "(none)", job->hostname ? job->hostname : "(none)",
-    job->announce_path ? job->announce_path : "(none)", job->announce_url );
-
+  bep034_dumpjob( job );
   return 1;
 }
 
@@ -112,6 +108,14 @@ static void bep034_finishjob( bep034_job * job ) {
   /* For now no job handling */
   return;
 }
+
+static void bep034_dumpjob( bep034_job * job ) {
+  printf( "Parsed job info:\n Status: %d (%s)\n Proto: %s\n Port: %d\n Userinfo: %s\n Hostname: %s\n Path: %s\n Original URL: %s\n",
+    job->status, bep034_status_to_name[job->status], job->proto ? "UDP" : "HTTP", job->port,
+    job->userinfo ? job->userinfo : "(none)", job->hostname ? job->hostname : "(none)",
+    job->announce_path ? job->announce_path : "(none)", job->announce_url );
+}
+
 
 /************ Host record handlers *************/
 
@@ -134,12 +138,18 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
   /* Reset hostrecord pointer */
   * hostrecord = 0;
 
+  /* Ensure exclusive access to the host record list */
+  pthread_mutex_lock( &bep034_lock );
+
   /* If we find a record in cache, return it */
   hr = bep034_find_hostrecord( hostname );
   if( hr ) {
     *hostrecord = hr;
     return BEP_034_INPROGRESS;
   }
+
+  /* Return mutex */
+  pthread_mutex_unlock( &bep034_lock );
 
   /* Query resolver for TXT records for the trackers domain */
   answer_len = res_search(hostname, ns_c_in, ns_t_txt, answer, sizeof(answer));
@@ -240,6 +250,10 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
         hr->trackers[ hr->entries++ ] = port | ( found ? 0x10000 : 0 );
       }
 
+      /* Ensure exclusive access to the host record list, lock will be held
+         on return so that the caller can work with hr */
+      pthread_mutex_lock( &bep034_lock );
+
       /* Hand over record to cache, from now the cache has to release memory */
       if( bep034_save_record( hr ) )
         return BEP_034_TIMEOUT;
@@ -292,6 +306,10 @@ static void *bep034_worker() {
     /* Fill host record with results from DNS query or cache,
        owner of the hr is the cache, not us. This can block */
     res = bep034_fill_hostrecord( myjob->hostname, &hr );
+
+    /* Function returns with the bep034_lock locked, so that hr will
+       be valid until we're finished with it */
+
     switch( res ) {
     case BEP_034_TIMEOUT:
     case BEP_034_NXDOMAIN:
@@ -306,6 +324,9 @@ static void *bep034_worker() {
         myjob->status = BEP_034_TIMEOUT;
       break;
     }
+    /* Return mutex */
+    pthread_mutex_unlock( &bep034_lock );
+
     if( g_callback )
       g_callback( myjob->lookup_id, myjob->status, reply );
     free( reply );
@@ -351,11 +372,11 @@ static bep034_status bep034_parse_announce_url( bep034_job *job ) {
   } else
     colon = strchr( announce_url, ':' );
 
-  /* This helps parsing */
-  if( slash ) *slash = 0;
-
   /* If colon is only after domain part, ignore it */
   if( slash && colon && colon > slash ) colon = 0;
+
+  /* This helps parsing */
+  if( slash ) *slash = 0;
   if( colon ) *colon = 0;
 
   /* The host name should now be \0 terminated */
