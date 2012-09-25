@@ -206,6 +206,9 @@ static int bep034_save_record( bep034_hostrecord * hostrecord ) {
   return 0;
 }
 
+/* This function expects the bep034_lock to be held by caller,
+   releases it while working and returns with the lock held
+*/
 static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostrecord ** hostrecord ) {
   uint8_t answer[NS_PACKETSZ];
   bep034_hostrecord * hr = 0;
@@ -215,9 +218,6 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
 
   /* Reset hostrecord pointer */
   * hostrecord = 0;
-
-  /* Ensure exclusive access to the host record list */
-  pthread_mutex_lock( &bep034_lock );
 
   /* If we find a record in cache, return it */
   hr = bep034_find_hostrecord( hostname );
@@ -377,8 +377,6 @@ static void *bep034_worker() {
     /* Waking up, grab one job from the work queue */
     myjob = bep034_getjob( );
     if( !myjob ) continue;
-
-    pthread_mutex_unlock( &bep034_lock );
 
     /* Fill host record with results from DNS query or cache,
        owner of the hr is the cache, not us. This can block */
