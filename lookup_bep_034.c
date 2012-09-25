@@ -23,16 +23,20 @@ static pthread_mutex_t bep034_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  bep034_cond = PTHREAD_COND_INITIALIZER;
 static void (*g_callback) ( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url );
 
-typedef struct {
-  bep034_lookup_id lookup_id;
-  bep034_status    status;
-  int              proto;     // 0 for http, 1 for udp
-  uint16_t         port;      // 0 for not explicitly stated
-  char            *userinfo;
-  char            *hostname;
-  char            *announce_path;
-  char            *announce_url;
+typedef struct bep034_job {
+  bep034_lookup_id    lookup_id;
+  bep034_status       status;
+  int                 proto;     // 0 for http, 1 for udp
+  uint16_t            port;      // 0 for not explicitly stated
+  char              * userinfo;
+  char              * hostname;
+  char              * announce_path;
+  char              * announce_url;
+  struct bep034_job * next;
 } bep034_job;
+/* Linked list guarded by bep034_lock */
+static bep034_job * bep034_joblist;
+static int          bep034_jobnumber;
 
 typedef struct {
   char            *hostname;
@@ -93,23 +97,65 @@ void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, be
   pthread_mutex_unlock( &bep034_lock );
 }
 
-/* This function expects the bep034_lock to be held by caller */
+/* This function expects the bep034_lock to be held by caller,
+   it assumes job to be on stack, fills out lookup_id, takes
+   a copy and links it to the job list */
 static int bep034_pushjob( bep034_job * job ) {
+  bep034_job * newjob = malloc( sizeof( bep034_job ) );
+
   /* For now no job handling */
   bep034_dumpjob( job );
-  return 1;
-}
 
-/* This function expects the bep034_lock to be held by caller */
-static bep034_job * bep034_getjob() {
-  /* For now no job handling */
+  if( !newjob )
+    return -1;
+
+  job->lookup_id = ++bep034_jobnumber;
+
+  memcpy( newjob, job, sizeof( bep034_job ) );
+
+  newjob->next = bep034_joblist;
+  bep034_joblist = newjob;
+
+  /* Wake up sleeping workers */
+  pthread_cond_signal( &bep034_cond );
+
   return 0;
 }
 
-/* This function expects the bep034_lock to be held by caller */
-static void bep034_finishjob( bep034_job * job ) {
+/* This function expects the bep034_lock to be held by caller,
+   it marks the job as by removing the pointer from linked list */
+static bep034_job * bep034_getjob() {
+  bep034_job * job = 0, * outjob;
+
   /* For now no job handling */
-  return;
+  while( !bep034_joblist )
+    pthread_cond_wait( &bep034_cond, &bep034_lock);
+
+  if( !bep034_joblist->next ) {
+    outjob = bep034_joblist;
+    bep034_joblist = 0;
+  } else {
+    job = bep034_joblist;
+
+    while( job && job->next )
+      job = job->next;
+
+    outjob = job->next;
+    job->next = 0;
+  }
+
+  return outjob;
+}
+
+/* Clean up structure */
+static void bep034_finishjob( bep034_job * job ) {
+  if( job ) {
+    free( job->userinfo );
+    free( job->hostname );
+    free( job->announce_path );
+    free( job->announce_url );
+  }
+  free( job );
 }
 
 static void bep034_dumpjob( bep034_job * job ) {
@@ -298,8 +344,6 @@ static void *bep034_worker() {
     char * reply = 0;
     int res;
 
-    pthread_cond_wait( &bep034_cond, &bep034_lock);
-
     /* Waking up, grab one job from the work queue */
     myjob = bep034_getjob( );
     if( !myjob ) continue;
@@ -334,9 +378,11 @@ static void *bep034_worker() {
       g_callback( myjob->lookup_id, myjob->status, reply );
     free( reply );
 
-    /* Acquire lock to return the job as finished, loop */
-    pthread_mutex_lock( &bep034_lock );
+    /* Clean up structure */
     bep034_finishjob( myjob );
+
+    /* Acquire lock to  loop */
+    pthread_mutex_lock( &bep034_lock );
   }
 }
 
@@ -433,6 +479,9 @@ static bep034_status bep034_parse_announce_url( bep034_job *job ) {
 
 int bep034_lookup( const char * announce_url ) {
   bep034_job tmpjob;
+  int res;
+
+  /* Need a pristine struct */
   memset( &tmpjob, 0, sizeof(tmpjob));
 
   tmpjob.announce_url = strdup( announce_url );
@@ -448,10 +497,14 @@ int bep034_lookup( const char * announce_url ) {
   /* Ensure exclusive access to the host record list */
   pthread_mutex_lock( &bep034_lock );
 
-  /* The function takes a copy of our job object but
+  /* The function takes a copy of our job object and
      fills in the lookup_id */
-  bep034_pushjob( &tmpjob );
+  res = bep034_pushjob( &tmpjob );
   pthread_mutex_unlock( &bep034_lock );
+
+  /* Pushing may have failed */
+  if( res )
+    return res;
 
   return tmpjob.lookup_id;
 }
