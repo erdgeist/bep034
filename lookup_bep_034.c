@@ -93,17 +93,20 @@ void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, be
   pthread_mutex_unlock( &bep034_lock );
 }
 
+/* This function expects the bep034_lock to be held by caller */
 static int bep034_pushjob( bep034_job * job ) {
   /* For now no job handling */
   bep034_dumpjob( job );
   return 1;
 }
 
+/* This function expects the bep034_lock to be held by caller */
 static bep034_job * bep034_getjob() {
   /* For now no job handling */
   return 0;
 }
 
+/* This function expects the bep034_lock to be held by caller */
 static void bep034_finishjob( bep034_job * job ) {
   /* For now no job handling */
   return;
@@ -367,7 +370,7 @@ static bep034_status bep034_parse_announce_url( bep034_job *job ) {
   if( *announce_url == '[' ) {
     const char * closing_bracket = strchr( announce_url, ']' );
     if( !closing_bracket )
-      return BEP_034_PARSEERROR;
+      return (job->status = BEP_034_PARSEERROR);
     colon = strchr( closing_bracket, ':' );
   } else
     colon = strchr( announce_url, ':' );
@@ -392,35 +395,38 @@ static bep034_status bep034_parse_announce_url( bep034_job *job ) {
   /* If we've found a colon followed by a slash, we've very likely
      encountered an unknown scheme. Report a parse error */
   if( colon + 1 == slash )
-    return BEP_034_PARSEERROR;
+    return (job->status = BEP_034_PARSEERROR);
 
   /* Everything from colon to eos must be digits */
   while( colon && *++colon ) {
     if( *colon >= '0' && *colon <= '9' )
       job->port = job->port * 10 + *colon - '0';
     else
-      return BEP_034_PARSEERROR;
+      return (job->status = BEP_034_PARSEERROR);
   }
 
   if( !job->hostname || !*job->hostname )
-    return BEP_034_PARSEERROR;
+    return (job->status = BEP_034_PARSEERROR);
 
   /* Avoid looking up v4/v6 URIs */
   if( *job->hostname == '[' )
-    return BEP_034_NORECORD;
+    return (job->status = BEP_034_NORECORD);
 
   /* Candidates are hostnames starting with a digit */
   if( *job->hostname >= '0' && *job->hostname <= '9' ) {
     /* If TLD consists solely of digits, assume ipv4 address */
     char * dot = strrchr( job->hostname, '.' );
-    if( !dot ) return BEP_034_INPROGRESS;
+    if( !dot )
+      return (job->status = BEP_034_INPROGRESS);
 
-    while( *++dot ) if( *dot < '0' || *dot > '9' ) return BEP_034_INPROGRESS;
+    while( *++dot )
+      if( *dot < '0' || *dot > '9' )
+        return (job->status = BEP_034_INPROGRESS);
 
-    return BEP_034_NORECORD;
+    return (job->status = BEP_034_NORECORD);
   }
 
-  return BEP_034_INPROGRESS;
+  return (job->status = BEP_034_INPROGRESS);
 }
 
 /************ The user API to kick off a lookup *************/
@@ -433,15 +439,21 @@ int bep034_lookup( const char * announce_url ) {
   if( !tmpjob.announce_url )
     return -1;
 
-  tmpjob.status = bep034_parse_announce_url( &tmpjob );
+  (void)bep034_parse_announce_url( &tmpjob );
 
   /* announce url might have been modified by parser */
   free( tmpjob.announce_url );
   tmpjob.announce_url = strdup( announce_url );
 
-  bep034_pushjob( &tmpjob );
+  /* Ensure exclusive access to the host record list */
+  pthread_mutex_lock( &bep034_lock );
 
-  return 0;
+  /* The function takes a copy of our job object but
+     fills in the lookup_id */
+  bep034_pushjob( &tmpjob );
+  pthread_mutex_unlock( &bep034_lock );
+
+  return tmpjob.lookup_id;
 }
 
 /********************************
