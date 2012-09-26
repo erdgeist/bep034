@@ -417,14 +417,14 @@ static void bep034_actonrecord( bep034_job * job, bep034_hostrecord * hostrecord
 static void bep034_build_announce_url( bep034_job * job, char ** announce_url ) {
   /* First check length required to compose announce url */
   size_t req_len = snprintf( 0, 0, "%s://%s%s%s:%d/%s",
-    job->proto ? "http" : "udp", job->userinfo ? job->userinfo : "", job->userinfo ? "@" : "",
+    job->proto ? "udp" : "http", job->userinfo ? job->userinfo : "", job->userinfo ? "@" : "",
     job->hostname, job->port ? job->port : 80, job->announce_path ? job->announce_path : "" );
 
   *announce_url = malloc( req_len + 1 );
   if( !*announce_url ) return;
 
   snprintf( *announce_url, req_len + 1, "%s://%s%s%s:%d/%s",
-    job->proto ? "http" : "udp", job->userinfo ? job->userinfo : "", job->userinfo ? "@" : "",
+    job->proto ? "udp" : "http", job->userinfo ? job->userinfo : "", job->userinfo ? "@" : "",
     job->hostname, job->port ? job->port : 80, job->announce_path ? job->announce_path : "" );
 }
 
