@@ -100,7 +100,6 @@ void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, be
      calling res_init() from res_search */
 #ifndef __MACH__
   res_init();
-  _res.options |= RES_DEBUG;
 #endif
 
   pthread_mutex_lock( &bep034_lock );
