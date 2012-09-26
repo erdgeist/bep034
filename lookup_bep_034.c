@@ -226,7 +226,7 @@ static int bep034_save_record( bep034_hostrecord ** hostrecord ) {
 
   /* Make room for the new host record and store it there */
   new_hostrecordlist =
-    realloc( bep034_hostrecordlist, bep034_hostrecordcount * sizeof( bep034_hostrecord *) );
+    realloc( bep034_hostrecordlist, ( 1 + bep034_hostrecordcount ) * sizeof( bep034_hostrecord *) );
 
   /* If we can not rellocate, there's no place to store the host record to,
      signal an error and deallocate the host record */
