@@ -8,6 +8,7 @@
 #ifdef __MACH__
 #include <mach/clock.h>
 #include <mach/mach.h>
+#include <dns.h>
 #endif
 
 /* DNS related includes */
@@ -61,7 +62,7 @@ static void          bep034_finishjob( bep034_job * job );
 static void          bep034_dumpjob( bep034_job * job );
 
 static bep034_hostrecord * bep034_find_hostrecord( const char * hostname, int * index );
-static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostrecord ** hostrecord );
+static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostrecord ** hostrecord, uintptr_t dns_handle );
 static int           bep034_save_record( bep034_hostrecord ** hostrecord );
 static void          bep034_dump_record( bep034_hostrecord * hostrecord );
 static void          bep034_actonrecord( bep034_job * job, bep034_hostrecord * hostrecord );
@@ -97,7 +98,10 @@ void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, be
 
   /* Be sure to init libresolv before workers compete for
      calling res_init() from res_search */
+#ifndef __MACH__
   res_init();
+  _res.options |= RES_DEBUG;
+#endif
 
   pthread_mutex_lock( &bep034_lock );
   g_callback = callback;
@@ -114,13 +118,11 @@ void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, be
 static int bep034_pushjob( bep034_job * job ) {
   bep034_job * newjob = malloc( sizeof( bep034_job ) );
 
-  /* For now no job handling */
-  bep034_dumpjob( job );
-
   if( !newjob )
     return -1;
 
   job->lookup_id = ++bep034_jobnumber;
+  bep034_dumpjob( job );
 
   memcpy( newjob, job, sizeof( bep034_job ) );
 
@@ -162,8 +164,8 @@ static void bep034_finishjob( bep034_job * job ) {
 }
 
 static void bep034_dumpjob( bep034_job * job ) {
-  printf( "Parsed job info:\n Status: %d (%s)\n Proto: %s\n Port: %d\n Userinfo: %s\n Hostname: %s\n Path: %s\n Original URL: %s\n",
-    job->status, bep034_status_to_name[job->status], job->proto ? "UDP" : "HTTP", job->port,
+  printf( "Parsed job info %d:\n Status: %d (%s)\n Proto: %s\n Port: %d\n Userinfo: %s\n Hostname: %s\n Path: %s\n Original URL: %s\n",
+    job->lookup_id, job->status, bep034_status_to_name[job->status], job->proto ? "UDP" : "HTTP", job->port,
     job->userinfo ? job->userinfo : "(none)", job->hostname ? job->hostname : "(none)",
     job->announce_path ? job->announce_path : "(none)", job->announce_url );
 }
@@ -247,7 +249,7 @@ static int bep034_save_record( bep034_hostrecord ** hostrecord ) {
 
 static void bep034_dump_record( bep034_hostrecord * hostrecord ) {
   int i;
-  printf( "Hostname: %s^n Expiry in s: %d\n", hostrecord->hostname, (int)hostrecord->expiry );
+  printf( "Hostname: %s\n Expiry in s: %ld\n", hostrecord->hostname, (long)(hostrecord->expiry - NOW()) );
   for( i=0; i<hostrecord->entries; ++i ) {
     printf( " Tracker at: %s Port %d\n", ( hostrecord->trackers[i] & 0x10000 ) ? "UDP " : "HTTP", hostrecord->trackers[i] & 0xffff );
   }
@@ -257,7 +259,7 @@ static void bep034_dump_record( bep034_hostrecord * hostrecord ) {
 /* This function expects the bep034_lock to be held by caller,
    releases it while working and returns with the lock held
 */
-static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostrecord ** hostrecord ) {
+static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostrecord ** hostrecord, uintptr_t dns_handle ) {
   uint8_t answer[NS_PACKETSZ];
   bep034_hostrecord * hr = 0;
   int answer_len, num_msgs, max_entries, i;
@@ -279,7 +281,16 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
   pthread_mutex_unlock( &bep034_lock );
 
   /* Query resolver for TXT records for the trackers domain */
+#ifdef __MACH__
+  {
+    struct sockaddr tmp;
+    uint32_t tmplen;
+    answer_len = dns_search( (dns_handle_t)dns_handle, hostname, ns_c_in, ns_t_txt, answer, sizeof(answer), &tmp, &tmplen );
+  }
+#else
+  (void)dns_handle;
   answer_len = res_search(hostname, ns_c_in, ns_t_txt, answer, sizeof(answer));
+#endif
   if( answer_len < 0 ) {
     /* Here we enter race condition land */
     switch( h_errno ) {
@@ -298,7 +309,6 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
       uint16_t record_len = ns_rr_rdlen(rr);
       const uint8_t *record_ptr = ns_rr_rdata(rr);
       const char * string_ptr, * string_end;
-      uint32_t port = 0;
 
       /* First octet is length of (first) string in the txt record.
          Since BEP034 does not say anything about multiple strings,
@@ -348,6 +358,8 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
 
       while( string_ptr + 6 < string_end ) { /* We need at least 6 bytes for a word */
         int found;
+        uint32_t port = 0;
+
         ++string_ptr;
         if( string_ptr[-1] != ' ' || string_ptr[2] != 'P' || string_ptr[3] != ':' )
           continue;
@@ -418,12 +430,16 @@ static void bep034_build_announce_url( bep034_job * job, char ** announce_url ) 
 }
 
 static void *bep034_worker() {
+#ifdef __MACH__
+  dns_handle_t dns_handle = dns_open(0);
+#else
+  void *dns_handle = 0;
+#endif
   pthread_mutex_lock( &bep034_lock );
   while( 1 ) {
     bep034_job * myjob = 0;
     bep034_hostrecord * hr = 0;
     char * reply = 0;
-    int res;
 
     /* Waking up, grab one job from the work queue */
     myjob = bep034_getjob( );
@@ -431,25 +447,18 @@ static void *bep034_worker() {
 
     /* Fill host record with results from DNS query or cache,
        owner of the hr is the cache, not us. This can block (but releases lock while blocking) */
-    res = bep034_fill_hostrecord( myjob->hostname, &hr );
+    if( myjob->status == BEP_034_INPROGRESS )
+      myjob->status = bep034_fill_hostrecord( myjob->hostname, &hr, (uintptr_t)dns_handle );
 
     /* Function returns with the bep034_lock locked, so that hr will
        be valid until we're finished with it */
 
-    switch( res ) {
-    case BEP_034_TIMEOUT:
-    case BEP_034_NXDOMAIN:
-    case BEP_034_DENYALL:
-      myjob->status = res;
-      break;
-    default:
-      if( hr ) {
-        bep034_actonrecord( myjob, hr );
-        bep034_build_announce_url( myjob, &reply );
-      } else
-        myjob->status = BEP_034_TIMEOUT;
-      break;
-    }
+   if( myjob->status == BEP_034_INPROGRESS ) {
+      bep034_actonrecord( myjob, hr );
+      bep034_build_announce_url( myjob, &reply );
+   } else
+      reply = strdup( myjob->announce_url );
+
     /* Return mutex */
     pthread_mutex_unlock( &bep034_lock );
 
