@@ -63,6 +63,7 @@ static void          bep034_dumpjob( bep034_job * job );
 static bep034_hostrecord * bep034_find_hostrecord( const char * hostname, int * index );
 static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostrecord ** hostrecord );
 static int           bep034_save_record( bep034_hostrecord ** hostrecord );
+static void          bep034_dump_record( bep034_hostrecord * hostrecord );
 static void          bep034_actonrecord( bep034_job * job, bep034_hostrecord * hostrecord );
 static void          bep034_build_announce_url( bep034_job * job, char ** announce_url );
 
@@ -244,6 +245,15 @@ static int bep034_save_record( bep034_hostrecord ** hostrecord ) {
   return 0;
 }
 
+static void bep034_dump_record( bep034_hostrecord * hostrecord ) {
+  int i;
+  printf( "Hostname: %s^n Expiry in s: %d\n", hostrecord->hostname, (int)hostrecord->expiry );
+  for( i=0; i<hostrecord->entries; ++i ) {
+    printf( " Tracker at: %s Port %d\n", ( hostrecord->trackers[i] & 0x10000 ) ? "UDP " : "HTTP", hostrecord->trackers[i] & 0xffff );
+  }
+  putchar( 10 );
+}
+
 /* This function expects the bep034_lock to be held by caller,
    releases it while working and returns with the lock held
 */
@@ -281,7 +291,7 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
 
   ns_initparse (answer, answer_len, &msg);
   num_msgs = ns_msg_count (msg, ns_s_an);
-  for (i = 0; i < num_msgs; ++i) {
+  for( i=0; i<num_msgs; ++i) {
     ns_parserr (&msg, ns_s_an, i, &rr);
     if (ns_rr_class(rr) == ns_c_in && ns_rr_type(rr) == ns_t_txt ) {
       uint32_t record_ttl = ns_rr_ttl(rr);
@@ -374,6 +384,9 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
       /* Hand over record to cache, from now the cache has to release memory */
       if( bep034_save_record( &hr ) )
         return BEP_034_TIMEOUT;
+
+      /* Dump what we found */
+      bep034_dump_record( hr );
 
       /* Once the first line in the first record has been parsed, return host record */
       *hostrecord = hr;
