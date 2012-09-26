@@ -93,12 +93,10 @@ static int NOW() {
 
 void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url ), int worker_threads) {
   pthread_t thread_id;
-  fprintf( stderr, "LOCK++: bep034_register_callback\n");
   pthread_mutex_lock( &bep034_lock );
   g_callback = callback;
   while( worker_threads-- )
     pthread_create( &thread_id, NULL, bep034_worker, NULL );
-  fprintf( stderr, "LOCK--: bep034_register_callback\n");
   pthread_mutex_unlock( &bep034_lock );
 }
 
@@ -261,7 +259,6 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
 
   /* Return mutex, we'll be blocking now and do not
      hold any resources in need of guarding  */
-  fprintf( stderr, "LOCK--: bep034_fill_hostrecord\n");
   pthread_mutex_unlock( &bep034_lock );
 
   /* Query resolver for TXT records for the trackers domain */
@@ -365,7 +362,6 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
 
       /* Ensure exclusive access to the host record list, lock will be held
          on return so that the caller can work with hr */
-      fprintf( stderr, "LOCK++: bep034_fill_hostrecord\n");
       pthread_mutex_lock( &bep034_lock );
 
       /* Hand over record to cache, from now the cache has to release memory */
@@ -402,7 +398,6 @@ static void bep034_build_announce_url( bep034_job * job, char ** announce_url ) 
 }
 
 static void *bep034_worker() {
-  fprintf( stderr, "LOCK++: bep034_worker\n");
   pthread_mutex_lock( &bep034_lock );
   while( 1 ) {
     bep034_job * myjob = 0;
@@ -436,7 +431,6 @@ static void *bep034_worker() {
       break;
     }
     /* Return mutex */
-    fprintf( stderr, "LOCK--: bep034_worker\n");
     pthread_mutex_unlock( &bep034_lock );
 
     if( g_callback )
@@ -447,7 +441,6 @@ static void *bep034_worker() {
     bep034_finishjob( myjob );
 
     /* Acquire lock to  loop */
-    fprintf( stderr, "LOCK++: bep034_worker\n");
     pthread_mutex_lock( &bep034_lock );
   }
 }
@@ -561,13 +554,11 @@ int bep034_lookup( const char * announce_url ) {
   tmpjob.announce_url = strdup( announce_url );
 
   /* Ensure exclusive access to the host record list */
-  fprintf( stderr, "LOCK++: bep034_lookup\n");
   pthread_mutex_lock( &bep034_lock );
 
   /* The function takes a copy of our job object and
      fills in the lookup_id */
   res = bep034_pushjob( &tmpjob );
-  fprintf( stderr, "LOCK--: bep034_lookup\n");
   pthread_mutex_unlock( &bep034_lock );
 
   /* Pushing may have failed */
