@@ -60,9 +60,9 @@ static bep034_job  * bep034_getjob();
 static void          bep034_finishjob( bep034_job * job );
 static void          bep034_dumpjob( bep034_job * job );
 
-static bep034_hostrecord * bep034_find_hostrecord( const char * hostname );
+static bep034_hostrecord * bep034_find_hostrecord( const char * hostname, int * index );
 static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostrecord ** hostrecord );
-static int           bep034_save_record( bep034_hostrecord * hostrecord );
+static int           bep034_save_record( bep034_hostrecord ** hostrecord );
 static void          bep034_actonrecord( bep034_job * job, bep034_hostrecord * hostrecord );
 static void          bep034_build_announce_url( bep034_job * job, char ** announce_url );
 
@@ -93,10 +93,12 @@ static int NOW() {
 
 void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url ), int worker_threads) {
   pthread_t thread_id;
+  fprintf( stderr, "LOCK++: bep034_register_callback\n");
   pthread_mutex_lock( &bep034_lock );
   g_callback = callback;
   while( worker_threads-- )
     pthread_create( &thread_id, NULL, bep034_worker, NULL );
+  fprintf( stderr, "LOCK--: bep034_register_callback\n");
   pthread_mutex_unlock( &bep034_lock );
 }
 
@@ -126,26 +128,18 @@ static int bep034_pushjob( bep034_job * job ) {
 }
 
 /* This function expects the bep034_lock to be held by caller,
-   it marks the job as by removing the pointer from linked list */
+   it marks the job as taken by removing the pointer from linked list */
 static bep034_job * bep034_getjob() {
-  bep034_job * job = 0, * outjob;
+  bep034_job ** job = &bep034_joblist, * outjob;
 
-  /* For now no job handling */
   while( !bep034_joblist )
     pthread_cond_wait( &bep034_cond, &bep034_lock);
 
-  if( !bep034_joblist->next ) {
-    outjob = bep034_joblist;
-    bep034_joblist = 0;
-  } else {
-    job = bep034_joblist;
+  while( (*job)->next )
+    job = &(*job)->next;
 
-    while( job && job->next )
-      job = job->next;
-
-    outjob = job->next;
-    job->next = 0;
-  }
+  outjob = *job;
+  *job = 0;
 
   return outjob;
 }
@@ -172,11 +166,10 @@ static void bep034_dumpjob( bep034_job * job ) {
 /************ Host record handlers *************/
 
 /* This function expects the bep034_lock to be held by caller */
-static bep034_hostrecord * bep034_find_hostrecord( const char * hostname ) {
-  int i;
+static bep034_hostrecord * bep034_find_hostrecord( const char * hostname, int * index ) {
   /* Linear search for now, have sorted list later */
-  for( i=0; i < bep034_hostrecordcount; ++i ) {
-    bep034_hostrecord * hr = bep034_hostrecordlist[i];
+  for( *index=0; *index < bep034_hostrecordcount; ++*index ) {
+    bep034_hostrecord * hr = bep034_hostrecordlist[*index];
 
     if( !strcasecmp( hr->hostname, hostname ) ) {
       /* If the entry is not yet expired, return it */
@@ -186,10 +179,12 @@ static bep034_hostrecord * bep034_find_hostrecord( const char * hostname ) {
       free( hr->hostname );
       free( hr );
 
-      memmove( bep034_hostrecordlist + i, bep034_hostrecordlist + 1, ( bep034_hostrecordcount - i ) * sizeof( bep034_hostrecord * ) );
+      memmove( bep034_hostrecordlist + *index, bep034_hostrecordlist + 1,
+        ( bep034_hostrecordcount - *index ) * sizeof( bep034_hostrecord * ) );
 
       /* Shrinking always succeeds */
-      bep034_hostrecordlist = realloc( bep034_hostrecordlist, --bep034_hostrecordcount * sizeof( bep034_hostrecord *) );
+      bep034_hostrecordlist = realloc( bep034_hostrecordlist,
+        --bep034_hostrecordcount * sizeof( bep034_hostrecord *) );
 
       /* Since we assume our array to be unique, we can stop here */
       return 0;
@@ -202,7 +197,45 @@ static bep034_hostrecord * bep034_find_hostrecord( const char * hostname ) {
 /* This function expects the bep034_lock to be held by caller,
    it takes the ownership of the hostrecord object on call and
    frees it on error */
-static int bep034_save_record( bep034_hostrecord * hostrecord ) {
+static int bep034_save_record( bep034_hostrecord ** hostrecord ) {
+  int index;
+  bep034_hostrecord * hr = bep034_find_hostrecord( (*hostrecord)->hostname, &index );
+  bep034_hostrecord ** new_hostrecordlist;
+
+  /* If we do know about this host already, check which entry expires earlier
+     and use the one that lasts longer */
+  if( hr ) {
+    if( hr->expiry < (*hostrecord)->expiry ) {
+      free( hr->hostname );
+      free( hr );
+      bep034_hostrecordlist[ index ] = *hostrecord;
+    } else {
+      free( (*hostrecord)->hostname );
+      free( *hostrecord );
+      *hostrecord = hr;
+    }
+    return 0;
+  }
+
+  /* Make room for the new host record and store it there */
+  new_hostrecordlist =
+    realloc( bep034_hostrecordlist, bep034_hostrecordcount * sizeof( bep034_hostrecord *) );
+
+  /* If we can not rellocate, there's no place to store the host record to,
+     signal an error and deallocate the host record */
+  if( !new_hostrecordlist ) {
+    free( (*hostrecord)->hostname );
+    free( *hostrecord );
+    return -1;
+  }
+
+  /* Use newly allocated host record list from now on */
+  bep034_hostrecordlist = new_hostrecordlist;
+
+  /* Everything went fine. Store new host record as last entry
+     TODO: Sort entries */
+  bep034_hostrecordlist[bep034_hostrecordcount++] = *hostrecord;
+
   return 0;
 }
 
@@ -220,7 +253,7 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
   * hostrecord = 0;
 
   /* If we find a record in cache, return it */
-  hr = bep034_find_hostrecord( hostname );
+  hr = bep034_find_hostrecord( hostname, &i /* dummy */ );
   if( hr ) {
     *hostrecord = hr;
     return BEP_034_INPROGRESS;
@@ -228,6 +261,7 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
 
   /* Return mutex, we'll be blocking now and do not
      hold any resources in need of guarding  */
+  fprintf( stderr, "LOCK--: bep034_fill_hostrecord\n");
   pthread_mutex_unlock( &bep034_lock );
 
   /* Query resolver for TXT records for the trackers domain */
@@ -331,10 +365,11 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
 
       /* Ensure exclusive access to the host record list, lock will be held
          on return so that the caller can work with hr */
+      fprintf( stderr, "LOCK++: bep034_fill_hostrecord\n");
       pthread_mutex_lock( &bep034_lock );
 
       /* Hand over record to cache, from now the cache has to release memory */
-      if( bep034_save_record( hr ) )
+      if( bep034_save_record( &hr ) )
         return BEP_034_TIMEOUT;
 
       /* Once the first line in the first record has been parsed, return host record */
@@ -367,6 +402,7 @@ static void bep034_build_announce_url( bep034_job * job, char ** announce_url ) 
 }
 
 static void *bep034_worker() {
+  fprintf( stderr, "LOCK++: bep034_worker\n");
   pthread_mutex_lock( &bep034_lock );
   while( 1 ) {
     bep034_job * myjob = 0;
@@ -379,7 +415,7 @@ static void *bep034_worker() {
     if( !myjob ) continue;
 
     /* Fill host record with results from DNS query or cache,
-       owner of the hr is the cache, not us. This can block */
+       owner of the hr is the cache, not us. This can block (but releases lock while blocking) */
     res = bep034_fill_hostrecord( myjob->hostname, &hr );
 
     /* Function returns with the bep034_lock locked, so that hr will
@@ -400,6 +436,7 @@ static void *bep034_worker() {
       break;
     }
     /* Return mutex */
+    fprintf( stderr, "LOCK--: bep034_worker\n");
     pthread_mutex_unlock( &bep034_lock );
 
     if( g_callback )
@@ -410,6 +447,7 @@ static void *bep034_worker() {
     bep034_finishjob( myjob );
 
     /* Acquire lock to  loop */
+    fprintf( stderr, "LOCK++: bep034_worker\n");
     pthread_mutex_lock( &bep034_lock );
   }
 }
@@ -523,11 +561,13 @@ int bep034_lookup( const char * announce_url ) {
   tmpjob.announce_url = strdup( announce_url );
 
   /* Ensure exclusive access to the host record list */
+  fprintf( stderr, "LOCK++: bep034_lookup\n");
   pthread_mutex_lock( &bep034_lock );
 
   /* The function takes a copy of our job object and
      fills in the lookup_id */
   res = bep034_pushjob( &tmpjob );
+  fprintf( stderr, "LOCK--: bep034_lookup\n");
   pthread_mutex_unlock( &bep034_lock );
 
   /* Pushing may have failed */
