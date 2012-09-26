@@ -93,11 +93,18 @@ static int NOW() {
 
 void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url ), int worker_threads) {
   pthread_t thread_id;
+
+  /* Be sure to init libresolv before workers compete for
+     calling res_init() from res_search */
+  res_init();
+
   pthread_mutex_lock( &bep034_lock );
   g_callback = callback;
+
   while( worker_threads-- )
     pthread_create( &thread_id, NULL, bep034_worker, NULL );
   pthread_mutex_unlock( &bep034_lock );
+
 }
 
 /* This function expects the bep034_lock to be held by caller,
