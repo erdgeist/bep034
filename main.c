@@ -5,7 +5,7 @@
 #define WORKER_THREADS 8
 
 void my_callback( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url) {
-  printf( "%d yields status: %s and url %s\n", lookup_id, bep034_status_to_name[status], announce_url );
+  printf( "%d yields status: %s.\n The URL to use is:  %s\n", lookup_id, bep034_status_to_name[status], announce_url );
 }
 
 int main( int argc, char ** argv ) {
@@ -19,6 +19,8 @@ int main( int argc, char ** argv ) {
   bep034_lookup( "127.0.0.1" );
   bep034_lookup( "udp://tracker.openbittorrent.com" );
   bep034_lookup( "http://tracker.openbittorrent.com" );
+  bep034_lookup( "xmpp://erdgeist@erdgeist.org" );
+  bep034_lookup( "http://erdgeist@erdgeist.org:a/" );
 
   /* Hang around for a while */
   sleep( 100 );
