@@ -39,6 +39,8 @@ typedef struct bep034_job {
 static bep034_job * bep034_joblist;
 static int          bep034_jobnumber;
 
+enum { PROTO_HTTP = 0, PROTO_UDP = 1 };
+
 typedef struct {
   char            *hostname;
   time_t           expiry;        // Calculate from DNS TTL, how long the cache is valid
@@ -65,8 +67,11 @@ static bep034_hostrecord * bep034_find_hostrecord( const char * hostname, int * 
 static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostrecord ** hostrecord, uintptr_t dns_handle );
 static int           bep034_save_record( bep034_hostrecord ** hostrecord );
 static void          bep034_dump_record( bep034_hostrecord * hostrecord );
-static void          bep034_actonrecord( bep034_job * job, bep034_hostrecord * hostrecord );
+static bep034_status bep034_actonrecord( bep034_job * job, bep034_hostrecord * hostrecord );
 static void          bep034_build_announce_url( bep034_job * job, char ** announce_url );
+
+static int           bep034_inlist( bep034_hostrecord * hostrecord, int proto, int port );
+static int           bep034_firsttracker( bep034_hostrecord * hostrecord, int proto );
 
 /********************************
 
@@ -407,11 +412,78 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
 }
 
 /************ The actual engine[tm] *************/
+static int bep034_inlist( bep034_hostrecord * hostrecord, int proto, int port ) {
+  int i; for( i=0; i<hostrecord->entries; ++i )
+    if( hostrecord->trackers[i] == ( (proto << 16) | port ) )
+      return 1 + i;
+  return 0;
+}
 
-static void bep034_actonrecord( bep034_job * job, bep034_hostrecord * hostrecord ) {
-  /* Here comes the code that modifies a job description accoring to the host record
-     trackers */
-  return;
+static int bep034_firsttracker( bep034_hostrecord * hostrecord, int proto ) {
+  int i; for( i=0; i<hostrecord->entries; ++i )
+    if( hostrecord->trackers[i] >> 16 == proto )
+      return hostrecord->trackers[i] & 0xffff;;
+  return 0;
+}
+
+static bep034_status bep034_actonrecord( bep034_job * job, bep034_hostrecord * hr ) {
+  /* A host that denies everythig */
+  if( !hr->entries )
+    return (job->status = BEP_034_DENYALL );
+
+  if( job->proto == PROTO_UDP ) {
+    /* Here we only look if we can find the tracker entry*/
+    if( bep034_inlist( hr, PROTO_UDP, job->port ) ) {
+      if( bep034_inlist( hr, PROTO_HTTP, job->port ) )
+        return (job->status = BEP_034_UDPFIRST );
+      else
+        return (job->status = BEP_034_UDPONLY );
+    }
+
+    /* Original port not in list, or none given in URL */
+    job->port = bep034_firsttracker( hr, PROTO_UDP );
+
+    /* Use the preferred udp tracker first */
+    if( job->port )
+      return (job->status = BEP_034_UDPONLY );
+
+    /* If we end up here, only http trackers are available */
+    job->port = bep034_firsttracker( hr, PROTO_HTTP );
+    job->proto = PROTO_HTTP;
+
+    return (job->status = BEP_034_HTTPONLY );
+
+  } else { /* job->proto == PROTO_HTTP */
+    int http_port = bep034_firsttracker( hr, PROTO_HTTP );
+    int udp_port  = bep034_firsttracker( hr, PROTO_UDP );
+
+    /* If tracker says no http, take first udp tracker and return that */
+    if( !http_port ) {
+      job->port = udp_port;
+      return (job->status = BEP_034_UDPONLY );
+    }
+
+    /* If no port was given in URL, use one from  host record */
+    if( !job->port || !bep034_inlist( hr, PROTO_HTTP, job->port ) )
+      job->port = http_port;
+
+    /* If preferred tracker is udp, try udp first (or only, if no matching http port */
+    if( bep034_inlist( hr, PROTO_UDP, udp_port ) < bep034_inlist( hr, PROTO_HTTP, job->port ) ) {
+      job->proto = PROTO_UDP;
+      job->port  = udp_port;
+      if( bep034_inlist( hr, PROTO_HTTP, udp_port ) )
+        return (job->status = BEP_034_UDPFIRST);
+      else
+        return (job->status = BEP_034_UDPONLY);
+    }
+
+    /* Preferred tracker is http. Check for another udp tracker */
+    if( bep034_inlist( hr, PROTO_UDP, job->port ) )
+      return (job->status = BEP_034_HTTPFIRST );
+    else
+      return (job->status = BEP_034_HTTPONLY );
+  }
+  /* Not reached */
 }
 
 static void bep034_build_announce_url( bep034_job * job, char ** announce_url ) {

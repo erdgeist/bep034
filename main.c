@@ -17,7 +17,8 @@ int main( int argc, char ** argv ) {
   bep034_lookup( "[2001::7]" );
   bep034_lookup( "[2001::7]:70/tracker/announce" );
   bep034_lookup( "127.0.0.1" );
-  bep034_lookup( "tracker.openbittorrent.com" );
+  bep034_lookup( "udp://tracker.openbittorrent.com" );
+  bep034_lookup( "http://tracker.openbittorrent.com" );
 
   /* Hang around for a while */
   sleep( 100 );
