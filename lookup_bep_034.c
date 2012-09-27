@@ -169,7 +169,8 @@ static void bep034_finishjob( bep034_job * job ) {
 
 static void bep034_dumpjob( bep034_job * job ) {
   printf( "Parsed job info %d:\n Status: %d (%s)\n Proto: %s\n Port: %d\n Userinfo: %s\n Hostname: %s\n Path: %s\n Original URL: %s\n",
-    job->lookup_id, job->status, bep034_status_to_name[job->status], job->proto ? "UDP" : "HTTP", job->port,
+    job->lookup_id, job->status, bep034_status_to_name[job->status],
+  ( job->proto == PROTO_UDP ) ? "UDP" : "HTTP", job->port,
     job->userinfo ? job->userinfo : "(none)", job->hostname ? job->hostname : "(none)",
     job->announce_path ? job->announce_path : "(none)", job->announce_url );
 }
@@ -255,7 +256,7 @@ static void bep034_dump_record( bep034_hostrecord * hostrecord ) {
   int i;
   printf( "Hostname: %s\n Expiry in s: %ld\n", hostrecord->hostname, (long)(hostrecord->expiry - NOW()) );
   for( i=0; i<hostrecord->entries; ++i ) {
-    printf( " Tracker at: %s Port %d\n", ( hostrecord->trackers[i] & 0x10000 ) ? "UDP " : "HTTP", hostrecord->trackers[i] & 0xffff );
+    printf( " Tracker at: %s Port %d\n", ( ( hostrecord->trackers[i] ) >> 16 == PROTO_UDP ) ? "UDP " : "HTTP", hostrecord->trackers[i] & 0xffff );
   }
   putchar( 10 );
 }
@@ -489,14 +490,16 @@ static bep034_status bep034_actonrecord( bep034_job * job, bep034_hostrecord * h
 static void bep034_build_announce_url( bep034_job * job, char ** announce_url ) {
   /* First check length required to compose announce url */
   size_t req_len = snprintf( 0, 0, "%s://%s%s%s:%d/%s",
-    job->proto ? "udp" : "http", job->userinfo ? job->userinfo : "", job->userinfo ? "@" : "",
+    ( job->proto == PROTO_UDP ) ? "udp" : "http",
+    job->userinfo ? job->userinfo : "", job->userinfo ? "@" : "",
     job->hostname, job->port ? job->port : 80, job->announce_path ? job->announce_path : "" );
 
   *announce_url = malloc( req_len + 1 );
   if( !*announce_url ) return;
 
   snprintf( *announce_url, req_len + 1, "%s://%s%s%s:%d/%s",
-    job->proto ? "udp" : "http", job->userinfo ? job->userinfo : "", job->userinfo ? "@" : "",
+    ( job->proto == PROTO_UDP ) ? "udp" : "http",
+    job->userinfo ? job->userinfo : "", job->userinfo ? "@" : "",
     job->hostname, job->port ? job->port : 80, job->announce_path ? job->announce_path : "" );
 }
 
@@ -552,7 +555,7 @@ static bep034_status bep034_parse_announce_url( bep034_job *job ) {
   /* Decompose announce url, if it does not start with udp:// or http://,
      assume it to be an http url starting with the host name */
   if( !strncasecmp( announce_url, "udp://", 6 ) ) {
-    job->proto = 1;
+    job->proto = PROTO_UDP;
     announce_url += 6;
   } else if( !strncasecmp( announce_url, "http://", 7 ) )
     announce_url += 7;
