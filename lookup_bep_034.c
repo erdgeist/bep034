@@ -615,7 +615,7 @@ static bep034_status bep034_parse_announce_url( bep034_job *job ) {
 
   /* Avoid looking up v4/v6 URIs */
   if( *job->hostname == '[' )
-    return (job->status = BEP_034_NORECORD);
+    return (job->status = BEP_034_ISIP);
 
   /* Candidates are hostnames starting with a digit */
   if( *job->hostname >= '0' && *job->hostname <= '9' ) {
@@ -628,7 +628,7 @@ static bep034_status bep034_parse_announce_url( bep034_job *job ) {
       if( *dot < '0' || *dot > '9' )
         return (job->status = BEP_034_INPROGRESS);
 
-    return (job->status = BEP_034_NORECORD);
+    return (job->status = BEP_034_ISIP);
   }
 
   return (job->status = BEP_034_INPROGRESS);
@@ -676,12 +676,13 @@ int bep034_lookup( const char * announce_url ) {
 *********************************/
 
 const char *bep034_status_to_name[] = {
-  "Parse Error.",
+  "Parse Error",
   "In progress, i.e. OK so far",
   "Timeout, i.e. temporary failure",
   "NXDomain, i.e. host is unknown",
   "No trackers, i.e. host explicitely forbids tracker traffic",
-  "Domain has no record. Also true for v4 or v6 addresses",
+  "Domain has no record",
+  "Domain is an IP address",
   "HTTP only",
   "HTTP first",
   "UDP only",
