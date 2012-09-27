@@ -12,6 +12,8 @@ typedef enum {
 
   BEP_034_NORECORD,   /* Will be returned to your callback, if the host has no BITTORRENT TXT records
                          if default-try-udp is set, this will yield BEP_034_UDPFIRST instead */
+  BEP_034_ISIP,       /* Will be returned to your callback, if the host name is an ip address. Those
+                         can not be queried via DNS */
 
   /* As the BEP 034 format allows several entries in the form UDP:1337 TCP:80, here is, how the
      lookup function works:
