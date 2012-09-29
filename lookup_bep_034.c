@@ -1,8 +1,21 @@
 /* Standard C stuff */
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 #include <time.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+
+/* DNS related includes */
+#include <arpa/nameser.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <resolv.h>
+
+#endif
 
 /* OSX specific monotonic time functions */
 #ifdef __MACH__
@@ -11,17 +24,13 @@
 #include <dns.h>
 #endif
 
-/* DNS related includes */
-#include <arpa/nameser.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <resolv.h>
-
 /* Our header files */
 #include "lookup_bep_034.h"
 
+#ifndef _WIN32
 static pthread_mutex_t bep034_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  bep034_cond = PTHREAD_COND_INITIALIZER;
+#endif
 static void (*g_callback) ( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url );
 
 typedef struct bep034_job {
@@ -89,41 +98,48 @@ static int NOW() {
   host_get_clock_service(mach_host_self(), CALENDAR_CLOCK, &cclock);
   clock_get_time(cclock, &now);
   mach_port_deallocate(mach_task_self(), cclock);
-#else
+  return now.tv_sec;
+#elif !defined( _WIN32 )
   struct timespec now;
   clock_gettime(CLOCK_MONOTONIC, &now );
-#endif
   return now.tv_sec;
+#else
+  return GetTickCount() / 1000;
+#endif
 }
 
 /************ Threading and job dispatch helpers ************/
 
 void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url ), int worker_threads) {
+#ifndef _WIN32
   pthread_t thread_id;
 
   /* Be sure to init libresolv before workers compete for
      calling res_init() from res_search */
-#ifndef __MACH__
   res_init();
-#endif
 
   pthread_mutex_lock( &bep034_lock );
+#endif
+
   g_callback = callback;
 
+#ifndef _WIN32
   while( worker_threads-- )
     pthread_create( &thread_id, NULL, bep034_worker, NULL );
   pthread_mutex_unlock( &bep034_lock );
-
+#endif
 }
 
-/* This function expects the bep034_lock to be held by caller,
-   it assumes job to be on stack, fills out lookup_id, takes
+/* it assumes job to be on stack, fills out lookup_id, takes
    a copy and links it to the job list */
 static int bep034_pushjob( bep034_job * job ) {
   bep034_job * newjob = malloc( sizeof( bep034_job ) );
 
   if( !newjob )
     return -1;
+
+  /* Ensure exclusive access to the host record list */
+  pthread_mutex_lock( &bep034_lock );
 
   job->lookup_id = ++bep034_jobnumber;
   bep034_dumpjob( job );
@@ -134,6 +150,7 @@ static int bep034_pushjob( bep034_job * job ) {
   bep034_joblist = newjob;
 
   /* Wake up sleeping workers */
+  pthread_mutex_unlock( &bep034_lock );
   pthread_cond_signal( &bep034_cond );
 
   return 0;
@@ -656,13 +673,9 @@ int bep034_lookup( const char * announce_url ) {
   free( tmpjob.announce_url );
   tmpjob.announce_url = strdup( announce_url );
 
-  /* Ensure exclusive access to the host record list */
-  pthread_mutex_lock( &bep034_lock );
-
   /* The function takes a copy of our job object and
      fills in the lookup_id */
   res = bep034_pushjob( &tmpjob );
-  pthread_mutex_unlock( &bep034_lock );
 
   /* Pushing may have failed */
   if( res )

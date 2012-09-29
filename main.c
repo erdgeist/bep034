@@ -1,3 +1,6 @@
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include <stdio.h>
 #include "lookup_bep_034.h"
 
@@ -23,7 +26,11 @@ int main( int argc, char ** argv ) {
   bep034_lookup( "http://erdgeist@erdgeist.org:a/" );
 
   /* Hang around for a while */
-  sleep( 100 );
+#ifndef _WIN32
+  sleep(100);
+#else
+  Sleep(100000);
+#endif
 
   return 0;
 }
