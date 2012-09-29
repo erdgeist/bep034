@@ -1,5 +1,3 @@
-#include <pthread.h>
-
 typedef int bep034_lookup_id;
 typedef enum {
   BEP_034_PARSEERROR, /* Will be returned from bep034_lookup if it can't pase the announce_url */
