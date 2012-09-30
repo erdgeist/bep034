@@ -77,6 +77,7 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
 static int           bep034_save_record( bep034_hostrecord ** hostrecord );
 static void          bep034_dump_record( bep034_hostrecord * hostrecord );
 static bep034_status bep034_actonrecord( bep034_job * job, bep034_hostrecord * hostrecord );
+static bep034_status bep034_parse_announce_url( bep034_job *job );
 static void          bep034_build_announce_url( bep034_job * job, char ** announce_url );
 
 static int           bep034_inlist( bep034_hostrecord * hostrecord, int proto, int port );
