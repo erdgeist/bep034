@@ -53,7 +53,7 @@ typedef enum {
 extern const char *bep034_status_to_name[];
 
 /* Implementation */
-void bep034_register_callback(
+int bep034_register_callback(
   void (*callback) ( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url),
   int worker_threads
 );

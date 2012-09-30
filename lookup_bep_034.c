@@ -30,6 +30,9 @@
 #ifndef _WIN32
 static pthread_mutex_t bep034_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  bep034_cond = PTHREAD_COND_INITIALIZER;
+#else
+static HANDLE ghMutex;
+
 #endif
 static void (*g_callback) ( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url );
 
@@ -111,15 +114,20 @@ static int NOW() {
 
 /************ Threading and job dispatch helpers ************/
 
-void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url ), int worker_threads) {
+int bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url ), int worker_threads) {
 #ifndef _WIN32
   pthread_t thread_id;
+
+  pthread_mutex_lock( &bep034_lock );
 
   /* Be sure to init libresolv before workers compete for
      calling res_init() from res_search */
   res_init();
-
-  pthread_mutex_lock( &bep034_lock );
+#else
+  if( !ghMutex )
+    ghMutex = CreateMutex( NULL, FALSE, NULL);
+  if( !ghMutex )
+    return -1;
 #endif
 
   g_callback = callback;
@@ -129,6 +137,8 @@ void bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, be
     pthread_create( &thread_id, NULL, bep034_worker, NULL );
   pthread_mutex_unlock( &bep034_lock );
 #endif
+
+  return 0;
 }
 
 /* it assumes job to be on stack, fills out lookup_id, takes
@@ -147,12 +157,16 @@ static int bep034_pushjob( bep034_job * job ) {
 
   memcpy( newjob, job, sizeof( bep034_job ) );
 
+#ifndef _WIN32
   newjob->next = bep034_joblist;
   bep034_joblist = newjob;
 
   /* Wake up sleeping workers */
-  pthread_mutex_unlock( &bep034_lock );
   pthread_cond_signal( &bep034_cond );
+#else
+
+#endif
+  pthread_mutex_unlock( &bep034_lock );
 
   return 0;
 }
