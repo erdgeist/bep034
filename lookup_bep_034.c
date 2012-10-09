@@ -31,7 +31,7 @@
 static pthread_mutex_t bep034_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  bep034_cond = PTHREAD_COND_INITIALIZER;
 #else
-static HANDLE ghMutex;
+static HANDLE bep034_lock;
 
 #endif
 static void (*g_callback) ( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url );
@@ -68,6 +68,9 @@ static size_t bep034_hostrecordcount;
   Forward declarations
 
 *********************************/
+
+static void          bep034_dolock();
+static void          bep034_unlock();
 
 static void        * bep034_worker();
 static int           bep034_pushjob( bep034_job * job );
@@ -112,21 +115,30 @@ static int NOW() {
 #endif
 }
 
+#ifndef _WIN32
+static void bep034_dolock() { pthread_mutex_lock( &bep034_lock ); }
+static void bep034_dounlock() { pthread_mutex_unlock( &bep034_lock ); }
+#else
+static void bep034_dolock() { WaitForSingleObject( bep034_lock, INFINITE); }
+static void bep034_dounlock() { ReleaseMutex( bep034_lock ); }
+#endif
+
+
 /************ Threading and job dispatch helpers ************/
 
 int bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, bep034_status status, const char * announce_url ), int worker_threads) {
 #ifndef _WIN32
   pthread_t thread_id;
 
-  pthread_mutex_lock( &bep034_lock );
+  bep034_dolock();
 
   /* Be sure to init libresolv before workers compete for
      calling res_init() from res_search */
   res_init();
 #else
-  if( !ghMutex )
-    ghMutex = CreateMutex( NULL, FALSE, NULL);
-  if( !ghMutex )
+  if( !bep034_lock )
+    bep034_lock = CreateMutex( NULL, FALSE, NULL);
+  if( !bep034_lock )
     return -1;
 #endif
 
@@ -135,7 +147,7 @@ int bep034_register_callback( void (*callback) ( bep034_lookup_id lookup_id, bep
 #ifndef _WIN32
   while( worker_threads-- )
     pthread_create( &thread_id, NULL, bep034_worker, NULL );
-  pthread_mutex_unlock( &bep034_lock );
+  bep034_dounlock();
 #endif
 
   return 0;
@@ -150,7 +162,7 @@ static int bep034_pushjob( bep034_job * job ) {
     return -1;
 
   /* Ensure exclusive access to the host record list */
-  pthread_mutex_lock( &bep034_lock );
+  bep034_dolock();
 
   job->lookup_id = ++bep034_jobnumber;
   bep034_dumpjob( job );
@@ -166,7 +178,7 @@ static int bep034_pushjob( bep034_job * job ) {
 #else
 
 #endif
-  pthread_mutex_unlock( &bep034_lock );
+  bep034_dounlock();
 
   return 0;
 }
@@ -315,7 +327,7 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
 
   /* Return mutex, we'll be blocking now and do not
      hold any resources in need of guarding  */
-  pthread_mutex_unlock( &bep034_lock );
+  bep034_dounlock();
 
   /* Query resolver for TXT records for the trackers domain */
 #ifdef __MACH__
@@ -428,7 +440,7 @@ static bep034_status bep034_fill_hostrecord( const char * hostname, bep034_hostr
 
       /* Ensure exclusive access to the host record list, lock will be held
          on return so that the caller can work with hr */
-      pthread_mutex_lock( &bep034_lock );
+      bep034_dolock();
 
       /* Hand over record to cache, from now the cache has to release memory */
       if( bep034_save_record( &hr ) )
@@ -541,7 +553,7 @@ static void *bep034_worker() {
 #else
   void *dns_handle = 0;
 #endif
-  pthread_mutex_lock( &bep034_lock );
+  bep034_dolock();
   while( 1 ) {
     bep034_job * myjob = 0;
     bep034_hostrecord * hr = 0;
@@ -566,7 +578,7 @@ static void *bep034_worker() {
       reply = strdup( myjob->announce_url );
 
     /* Return mutex */
-    pthread_mutex_unlock( &bep034_lock );
+    bep034_dounlock();
 
     if( g_callback )
       g_callback( myjob->lookup_id, myjob->status, reply );
@@ -575,8 +587,8 @@ static void *bep034_worker() {
     /* Clean up structure */
     bep034_finishjob( myjob );
 
-    /* Acquire lock to  loop */
-    pthread_mutex_lock( &bep034_lock );
+    /* Acquire lock to loop */
+    bep034_dolock();
   }
 }
 
